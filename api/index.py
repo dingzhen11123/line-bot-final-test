@@ -1,9 +1,7 @@
-from http.server import BaseHTTPRequestHandler
 import os
 import json
 import requests
 import logging
-from urllib.parse import parse_qs, urlparse
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -55,7 +53,7 @@ def call_translation_api(text, target_lang):
     }
     
     try:
-        logger.info("Calling translation API")
+        logger.info("调用翻译 API")
         response = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=25)
         response.raise_for_status()
         
@@ -63,19 +61,19 @@ def call_translation_api(text, target_lang):
         translated_text = response_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         
         if translated_text:
-            logger.info("Translation successful")
+            logger.info("翻译成功")
             return translated_text
         else:
             return "翻译结果为空"
             
     except Exception as e:
-        logger.error(f"Translation failed: {e}")
-        return "翻译失败"
+        logger.error(f"翻译失败: {e}")
+        return "翻译服务暂时不可用"
 
 def send_reply_message(reply_token, message_text):
     """发送回复消息"""
     if not CHANNEL_ACCESS_TOKEN:
-        logger.error("Missing access token")
+        logger.error("缺少访问令牌")
         return False
     
     url = "https://api.line.me/v2/bot/message/reply"
@@ -97,10 +95,10 @@ def send_reply_message(reply_token, message_text):
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
-        logger.info("Reply sent successfully")
+        logger.info("回复发送成功")
         return True
     except Exception as e:
-        logger.error(f"Failed to send reply: {e}")
+        logger.error(f"发送回复失败: {e}")
         return False
 
 def handle_webhook_event(event):
@@ -118,18 +116,18 @@ def handle_webhook_event(event):
     if not original_text or not reply_token:
         return
     
-    logger.info(f"Processing message: {original_text}")
+    logger.info(f"处理消息: {original_text}")
     
     # 忽略已翻译的消息
     if original_text.startswith("🇹🇭") or original_text.startswith("🇨🇳"):
-        logger.info("Ignoring translated message")
+        logger.info("忽略已翻译消息")
         return
     
     # 检测语言
     is_thai = any('\u0e00' <= char <= '\u0e7f' for char in original_text)
     target_lang = "zh" if is_thai else "th"
     
-    logger.info(f"Language detected: {'Thai' if is_thai else 'Chinese'}")
+    logger.info(f"检测到语言: {'泰语' if is_thai else '中文'}")
     
     # 翻译
     translated_text = call_translation_api(original_text, target_lang)
@@ -138,55 +136,50 @@ def handle_webhook_event(event):
     reply_text = f"🇨🇳 {translated_text}" if is_thai else f"🇹🇭 {translated_text}"
     send_reply_message(reply_token, reply_text)
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        """处理 GET 请求"""
-        try:
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            
-            response_data = {
-                'status': 'ok',
-                'message': 'LINE Translation Bot is running',
-                'path': self.path,
-                'config_status': {
-                    'channel_secret': bool(CHANNEL_SECRET),
-                    'channel_token': bool(CHANNEL_ACCESS_TOKEN),
-                    'llm_api_key': bool(LLM_API_KEY),
-                    'llm_api_url': bool(LLM_API_URL)
-                }
+def handler(request):
+    """Vercel 处理函数"""
+    try:
+        method = request.method.upper()
+        
+        # 处理 GET 请求
+        if method == 'GET':
+            return {
+                'statusCode': 200,
+                'headers': {
+                    'Content-Type': 'application/json; charset=utf-8',
+                },
+                'body': json.dumps({
+                    'status': 'ok',
+                    'message': 'LINE 翻译机器人运行中',
+                    'config_status': {
+                        'channel_secret': bool(CHANNEL_SECRET),
+                        'channel_token': bool(CHANNEL_ACCESS_TOKEN),
+                        'llm_api_key': bool(LLM_API_KEY),
+                        'llm_api_url': bool(LLM_API_URL)
+                    }
+                }, ensure_ascii=False)
             }
-            
-            self.wfile.write(json.dumps(response_data).encode('utf-8'))
-            
-        except Exception as e:
-            logger.error(f"GET error: {e}")
-            self.send_error(500)
-    
-    def do_POST(self):
-        """处理 POST 请求 (webhook)"""
-        try:
+        
+        # 处理 POST 请求
+        if method == 'POST':
             # 获取签名
-            signature = self.headers.get('X-Line-Signature')
-            
+            signature = request.headers.get('x-line-signature')
             if not signature:
-                logger.error("Missing signature")
-                self.send_error(400, "Missing signature")
-                return
+                logger.error("缺少签名")
+                return {'statusCode': 400, 'body': '缺少签名'}
             
             # 获取请求体
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
+            if hasattr(request, 'get_data'):
+                body = request.get_data(as_text=True)
+            else:
+                body = request.data.decode('utf-8') if hasattr(request, 'data') else ''
             
             # 验证签名
             if not verify_signature(body, signature):
-                logger.error("Invalid signature")
-                self.send_error(400, "Invalid signature")
-                return
+                logger.error("签名验证失败")
+                return {'statusCode': 400, 'body': '签名验证失败'}
             
-            # 解析 webhook 数据
+            # 解析数据
             try:
                 webhook_data = json.loads(body)
                 events = webhook_data.get('events', [])
@@ -194,15 +187,14 @@ class handler(BaseHTTPRequestHandler):
                 for event in events:
                     handle_webhook_event(event)
                 
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(b'OK')
+                return {'statusCode': 200, 'body': 'OK'}
                 
             except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON: {e}")
-                self.send_error(400, "Invalid JSON")
-                
-        except Exception as e:
-            logger.error(f"POST error: {e}")
-            self.send_error(500)
+                logger.error(f"JSON 解析错误: {e}")
+                return {'statusCode': 400, 'body': 'JSON 格式错误'}
+        
+        return {'statusCode': 405, 'body': '方法不允许'}
+        
+    except Exception as e:
+        logger.error(f"处理错误: {e}")
+        return {'statusCode': 500, 'body': '内部服务器错误'}
