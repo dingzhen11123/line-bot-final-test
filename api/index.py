@@ -76,12 +76,13 @@ def translate_text(text, target_lang):
     source_lang = "泰语" if target_lang == "zh" else "中文"
     target_lang_name = "中文" if target_lang == "zh" else "泰语"
     
-    prompt = f"请将以下{source_lang}翻译成自然流畅的{target_lang_name}：{text}"
+    # 修改后的 prompt：更严格，要求仅输出翻译
+    prompt = f"请将以下{source_lang}翻译成自然流畅、当地人易懂、不会造成误解的{target_lang_name}。仅输出翻译结果，无任何解释、备注、音译或额外文字：\n{text}"
     
     payload = {
         "model": "gpt-4o-mini",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
+        "temperature": 0.3,  # 保持低温度，确保一致性
         "max_tokens": 1000
     }
     
@@ -102,6 +103,10 @@ def translate_text(text, target_lang):
         
         result = response.json()
         translated = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        
+        # 额外清理：移除任何可能的残留解释（万一有）
+        if "：" in translated and translated.startswith(text):  # 简单过滤，如果开头是原文本+冒号
+            translated = translated.split("：", 1)[1].strip() if "：" in translated else translated
         
         if translated:
             logger.info(f"翻译成功: '{translated}'")
