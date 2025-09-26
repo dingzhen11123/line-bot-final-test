@@ -1,8 +1,9 @@
+from http.server import BaseHTTPRequestHandler
 import os
 import json
 import requests
 import logging
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -137,60 +138,53 @@ def handle_webhook_event(event):
     reply_text = f"🇨🇳 {translated_text}" if is_thai else f"🇹🇭 {translated_text}"
     send_reply_message(reply_token, reply_text)
 
-def handler(request):
-    """Vercel serverless function handler"""
-    try:
-        # 获取请求方法
-        method = request.get('httpMethod', request.get('method', 'GET')).upper()
-        path = request.get('path', '/')
-        
-        # 处理 GET 请求 (健康检查)
-        if method == 'GET':
-            return {
-                'statusCode': 200,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({
-                    'status': 'ok',
-                    'message': 'LINE Translation Bot is running',
-                    'path': path,
-                    'config_status': {
-                        'channel_secret': bool(CHANNEL_SECRET),
-                        'channel_token': bool(CHANNEL_ACCESS_TOKEN),
-                        'llm_api_key': bool(LLM_API_KEY),
-                        'llm_api_url': bool(LLM_API_URL)
-                    }
-                })
-            }
-        
-        # 处理 POST 请求 (webhook)
-        if method == 'POST' and (path == '/callback' or path == '/'):
-            # 获取请求体
-            body = request.get('body', '')
-            if request.get('isBase64Encoded'):
-                import base64
-                body = base64.b64decode(body).decode('utf-8')
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """处理 GET 请求"""
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
             
+            response_data = {
+                'status': 'ok',
+                'message': 'LINE Translation Bot is running',
+                'path': self.path,
+                'config_status': {
+                    'channel_secret': bool(CHANNEL_SECRET),
+                    'channel_token': bool(CHANNEL_ACCESS_TOKEN),
+                    'llm_api_key': bool(LLM_API_KEY),
+                    'llm_api_url': bool(LLM_API_URL)
+                }
+            }
+            
+            self.wfile.write(json.dumps(response_data).encode('utf-8'))
+            
+        except Exception as e:
+            logger.error(f"GET error: {e}")
+            self.send_error(500)
+    
+    def do_POST(self):
+        """处理 POST 请求 (webhook)"""
+        try:
             # 获取签名
-            headers = request.get('headers', {})
-            signature = headers.get('x-line-signature') or headers.get('X-Line-Signature')
+            signature = self.headers.get('X-Line-Signature')
             
             if not signature:
                 logger.error("Missing signature")
-                return {
-                    'statusCode': 400,
-                    'body': json.dumps({'error': 'Missing signature'})
-                }
+                self.send_error(400, "Missing signature")
+                return
+            
+            # 获取请求体
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
             
             # 验证签名
             if not verify_signature(body, signature):
                 logger.error("Invalid signature")
-                return {
-                    'statusCode': 400,
-                    'body': json.dumps({'error': 'Invalid signature'})
-                }
+                self.send_error(400, "Invalid signature")
+                return
             
             # 解析 webhook 数据
             try:
@@ -200,31 +194,15 @@ def handler(request):
                 for event in events:
                     handle_webhook_event(event)
                 
-                return {
-                    'statusCode': 200,
-                    'body': 'OK'
-                }
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'OK')
                 
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON: {e}")
-                return {
-                    'statusCode': 400,
-                    'body': json.dumps({'error': 'Invalid JSON'})
-                }
-        
-        # 其他请求
-        return {
-            'statusCode': 404,
-            'body': json.dumps({'error': 'Not Found'})
-        }
-        
-    except Exception as e:
-        logger.error(f"Handler error: {e}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'error': 'Internal Server Error'})
-        }
-
-# Vercel 导出
-def main(request):
-    return handler(request)
+                self.send_error(400, "Invalid JSON")
+                
+        except Exception as e:
+            logger.error(f"POST error: {e}")
+            self.send_error(500)
